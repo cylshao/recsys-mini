@@ -1,0 +1,29 @@
+# Data & artifacts
+data/raw/
+data/processed/
+artifacts/
+*.parquet
+*.pkl
+*.npz
+*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+mlruns/

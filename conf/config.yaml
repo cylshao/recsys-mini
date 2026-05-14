@@ -1,0 +1,7 @@
+# =============================================================
+# recsys-mini  minimal recall + ranking recommender system config
+# =============================================================
+
+paths:
+  raw_dir: data/raw/ml-1m
+  processed_dir: data/processed
