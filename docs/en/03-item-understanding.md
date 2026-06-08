@@ -554,7 +554,7 @@ So **multimodal is completely off the table**. But pure structured / shallow-NLP
 
 | #   | Task                           | How                                                           | Payoff                        |
 | --- | ------------------------------ | ------------------------------------------------------------- | ----------------------------- |
-| 1   | Extract year from title        | regex `\((\d{4})\)` (already done in `01_movielens1m_eda.py`) | Decade feature for ranking    |
+| 1   | Extract year from title        | regex `\((\d{4})\)` (already done in `01_eda.py`) | Decade feature for ranking    |
 | 2   | Item age                       | `request_ts - first_seen_ts`                                  | Old- vs. new-movie preference |
 | 3   | Genre embedding                | 18-dim multi-hot → 8-dim dense (PMI / SVD)                    | Friendlier for ranking models |
 | 4   | Behavioral Item2Vec            | Treat each user's history as a "sentence", train Word2Vec     | Embeddings for cold items too |
@@ -610,7 +610,7 @@ These datasets let item understanding go from "almost nothing to learn" to "the 
 - **Cold items have embeddings** — solves half the cold-start problem
 - **Embeddings double as ranking features** — U-I and I-I similarity
 
-That is why `[README.md](../README.md)` lists "switch to KuaiRand" as a long-term roadmap item — **the foundation of item understanding is provided**, leaving you free to focus on recall, ranking, and re-rank.
+That is why `[README.md](../../README.md)` lists "switch to KuaiRand" as a long-term roadmap item — **the foundation of item understanding is provided**, leaving you free to focus on recall, ranking, and re-rank.
 
 ---
 

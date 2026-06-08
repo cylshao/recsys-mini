@@ -1,7 +1,70 @@
 # =============================================================
-# recsys-mini  minimal recall + ranking recommender system config
+# recsys-mini - minimal recall + ranking recommender config
+# All pipeline scripts read parameters from this single file.
 # =============================================================
 
+# ---- Filesystem paths (relative to project root) ----
 paths:
-  raw_dir: data/raw/ml-1m
-  processed_dir: data/processed
+  raw_dir: data/raw/ml-1m       # raw MovieLens-1M .dat files
+  processed_dir: data/processed # train/valid/test + side-info parquet
+  artifacts_dir: artifacts      # trained models (recall_*.pkl, ranker_lgb.pkl, ...)
+
+# ---- Dataset & sample preparation (02_prepare_samples.py) ----
+dataset:
+  name: movielens-1m            # metadata only; currently the sole supported dataset
+  positive_threshold: 4         # explicit rating >= this -> implicit positive
+
+  # Split strategy:
+  #   loo  = leave-one-out (per user: last positive -> test, 2nd-last -> valid)
+  #   time = global time-based split
+  # MovieLens has a sparse/skewed time distribution -> prefer loo;
+  # for temporally dense data (e.g. KuaiRand) use time.
+  split_strategy: loo
+
+  # time-split params (used when split_strategy=time)
+  test_days: 7
+  valid_days: 7
+
+  # loo params (used when split_strategy=loo)
+  loo_min_inter: 5              # min interactions for a user to enter valid/test (>=3)
+
+  # k-core filtering (applies to all strategies)
+  min_user_inter: 5
+  min_item_inter: 5
+
+# ---- Recall (03_train_recall.py) ----
+recall:
+  itemcf:
+    sim_topk: 100               # keep only top-N neighbors per item
+    user_history_len: 50        # use each user's most recent N interactions at inference
+    use_iuf: true               # inverse-user-frequency penalty for power users
+  popular:
+    topk: 200                   # size of the popularity fallback list
+  weights:                      # rank-based (RRF) fusion weights per route
+    itemcf: 1.0                 # personalized primary route
+    popular: 0.3                # low-weight fallback backfill
+
+# ---- Ranking (04_train_rank.py) ----
+ranker:
+  neg_ratio: 4                  # negatives sampled per positive
+  lgb:                          # LightGBM params (passed through as-is)
+    objective: binary
+    metric: auc
+    learning_rate: 0.05
+    num_leaves: 63
+    min_data_in_leaf: 50
+    feature_fraction: 0.9
+    bagging_fraction: 0.9
+    bagging_freq: 5
+    num_boost_round: 500
+    early_stopping_rounds: 30
+    verbose: -1
+
+# ---- Evaluation (03 recall eval & 05 end-to-end eval) ----
+eval:
+  topk_list: [10, 50, 200]      # K values for recall metrics
+  recall_for_rank: 200          # candidates recall hands to the ranker (05)
+  final_topn: 10                # Top-N kept after ranking for final metrics (05)
+
+# Global RNG seed for reproducibility.
+seed: 42

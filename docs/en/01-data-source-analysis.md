@@ -1,7 +1,7 @@
 # MovieLens-1M Data Source Deep Dive
 
 > The current  branch only implements the "**data download + EDA**" stage. Every number in this
-> doc comes from the actual output of `scripts/01_movielens1m_eda.py` — running it once reproduces them all.
+> doc comes from the actual output of `scripts/01_eda.py` — running it once reproduces them all.
 >
 > Recall / ranking / re-ranking / evaluation modules **are not yet implemented**. So this doc focuses
 > purely on "**the characteristics of the data source itself, and what they imply for a future
@@ -21,6 +21,7 @@
 - [10. Item metadata — 90s / Drama dominated](#10-item-metadata--90s--drama-dominated)
 - [11. Versus real UGC video platforms](#11-versus-real-ugc-video-platforms)
 - [12. Reproducing every number in this doc](#12-reproducing-every-number-in-this-doc)
+- [13. Preprocessing decisions baked into `02_prepare_samples.py`](#13-preprocessing-decisions-baked-into-02_prepare_samplespy)
 
 ---
 
@@ -30,7 +31,7 @@ The `main` branch's code currently covers only the **first two steps**:
 
 ```
 [step 1] Download   scripts/01_download_data.sh           # ML-1M zip → data/raw/ml-1m
-[step 2] EDA        scripts/01_movielens1m_eda.py         # prints 8 sections of stats
+[step 2] EDA        scripts/01_eda.py                     # prints 8 sections of stats
 ```
 
 The supporting library code:
@@ -427,8 +428,121 @@ Top genres (18 total, average 1.65 genres per item):
 ## 12. Reproducing every number in this doc
 
 ```bash
-bash scripts/01_download_data.sh                     # download ML-1M (one-time)
-.venv/bin/python scripts/01_movielens1m_eda.py       # run EDA
+bash scripts/download_data.sh                     # download ML-1M (one-time)
+.venv/bin/python scripts/01_eda.py                   # run EDA
 ```
 
 The output will be **identical** to every number in §4 ~ §10 of this doc.
+
+---
+
+## 13. Preprocessing decisions baked into `02_prepare_samples.py`
+
+The script `scripts/02_prepare_samples.py` turns the raw analysis above into 4 concrete preprocessing decisions. This section documents **what was decided** and, more importantly, **why** — so the rationale survives even if the script is rewritten.
+
+### 13.1 Decision summary
+
+| # | Parameter | Value | Rationale (one-liner) | Evidence |
+|---|---|---|---|---|
+| 1 | `min_user_inter` / `min_item_inter` (k-core) | **(5, 5)** | Drop sparse noise without losing real users | §6 + §7 |
+| 2 | `positive_threshold` | **4** | 4–5 stars = "real like"; 1–3 = weak / noisy signal | §4 |
+| 3 | `split_strategy` | **LOO** | Global time-split would leave ~30 eval users → unusable | §5 |
+| 4 | `filter_eval_users` | **always on** | Otherwise unseen-in-train users artificially deflate Recall@K | (engineering invariant) |
+
+### 13.2 Why these specific values
+
+#### Decision 1 — k-core = (5, 5)
+
+| Alternative | Trade-off | Verdict |
+|---|---|---|
+| k = 3 | Too lax — leaves "drive-by" users who hurt model quality | Reject |
+| k = 5 ⭐ | Drops < 1% of rows (§6: min interactions per user = 20 anyway) | **Pick** |
+| k = 10 | Over-filters — drops the realistic "light user" segment | Reject |
+
+> **Reality check**: thanks to the dataset's built-in 20-interaction minimum (§6), k-core = (5, 5) is effectively a no-op on the user side and only filters a handful of one-shot movies on the item side. It's kept mainly as **a guard for future datasets**.
+
+#### Decision 2 — positive_threshold = 4
+
+| Threshold | Positives kept | Signal quality | Verdict |
+|---|---|---|---|
+| ≥ 3 | ~82% | Noisy: "meh" ratings polluting "like" | Reject |
+| **≥ 4** ⭐ | ~58% (§4) | Clear: explicit thumbs-up | **Pick** |
+| ≥ 5 | ~22% | Pure but too few — overfitting risk | Reject |
+
+> **Industry alignment**: YouTube DNN, SASRec, SLIM, EASE — all foundational papers on ML-1M use **rating ≥ 4 as the positive label**. Picking 4 is a defensive choice that keeps results comparable to literature.
+
+#### Decision 3 — `split_strategy = loo`
+
+This is the single most consequential decision in the file. From §5:
+
+> Two-thirds of the data is concentrated in a 30-day window in mid-2000. A global time-split with `test_days = 7` would leave **~30 unique users in test** — far too few for stable Recall@K.
+
+LOO sidesteps this entirely:
+
+| | Global time-split | Leave-one-out (LOO) ⭐ |
+|---|---|---|
+| Test users (with `min_inter = 5`) | ~30 | **6,032** |
+| Defends against time leakage | ✓ (strictly) | ✗ (weakly — one user's test ts may precede another's train ts) |
+| Stability of Recall@K | poor (high variance) | **good** |
+| Industry use | streaming logs (Kuaishou, TikTok) | academic standard on MovieLens |
+
+> **Verdict**: the cross-user "time leakage" in LOO is an accepted compromise — it does not break a recall model's training signal in any meaningful way on this dataset.
+
+#### Decision 4 — `filter_eval_users` (always on)
+
+```
+LOO split  →  some valid/test rows reference users/items absent from train
+                  ↓
+Model trained on train  →  no embedding for those users/items
+                  ↓
+At eval time  →  always returns "no recommendation"  →  guaranteed miss
+                  ↓
+Recall@K is artificially deflated by N% — a metric artifact, not a model defect
+```
+
+**Solution**: drop those rows from valid/test before computing metrics. This is **not** "cheating" — it's removing rows the model is structurally unable to score. Every responsible recsys paper does this.
+
+### 13.3 Tuning cheat sheet
+
+When and why you might change each parameter:
+
+| Goal | Change | Cost |
+|---|---|---|
+| **Tighter "like" definition** (higher-quality positives) | `positive_threshold: 4 → 5` | ~62% fewer positives; possible overfit on small data |
+| **Accept weaker signals** (closer to implicit feedback) | `positive_threshold: 4 → 3` | +43% positives, but noise contaminates training |
+| **Simulate "light user" cold start** | `min_user_inter: 5 → 3` | More sparse users, lower model accuracy, but more realistic |
+| **Strict time-leakage prevention** | `split_strategy: loo → time` | Eval set collapses to ~30 users → unreliable comparisons |
+| **More training data per eval user** | `loo_min_inter: 5 → 3` | More users qualify for eval, each with shorter train history |
+| **Faster iteration in early dev** | `min_user_inter: 5 → 50` | Smaller dataset, faster to iterate; final results not comparable |
+
+### 13.4 What changes when switching dataset
+
+If you swap MovieLens-1M for **KuaiRand / Tenrec / MIND**, the same 4 decisions will likely change:
+
+| Decision | MovieLens-1M | KuaiRand / Tenrec (typical) |
+|---|---|---|
+| k-core | (5, 5) — defensive, mostly no-op | (10, 10)+ — data is dense enough to afford it |
+| positive_threshold | rating ≥ 4 | **N/A** — no explicit ratings; switch to `completion_rate ≥ 0.7` or `dwell_time ≥ 10s` |
+| split_strategy | LOO | **time** — time-dense logs, time-split is the production-faithful choice |
+| filter_eval_users | always on | still always on (engineering invariant) |
+
+> The decisions are dataset-dependent. **Document them per dataset.** This section is the template for the next dataset's analogous §13.
+
+### 13.5 Reproducing the preprocessing
+
+```bash
+bash scripts/download_data.sh                     # download ML-1M (one-time)
+.venv/bin/python scripts/02_prepare_samples.py       # run the 5-stage pipeline
+```
+
+Outputs land in `data/processed/`:
+
+```
+train.parquet    ~563k rows  ⭐ feeds recall + ranking training
+valid.parquet      ~6k rows  ⭐ early stopping / hyperparameter tuning
+test.parquet       ~6k rows  ⭐ held out, final Recall@K / NDCG / Coverage
+movies.parquet     ~4k rows  side info (title, genres)
+users.parquet      ~6k rows  side info (gender, age, occupation, zip)
+```
+
+The script logs a full funnel summary at the end — the numbers it prints **must match** the figures cited in §13.1 and §13.2; any drift is a signal that either the script or this doc is out of sync.
